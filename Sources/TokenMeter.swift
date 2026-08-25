@@ -208,10 +208,10 @@ func fetchChatGPT(tokenPath: String?) -> ProviderBalance {
     let rem7 = max(0, 100 - used7)
     let resets = w.rate_limit_reset_credits?.available_count ?? 0
 
-    let menuTitle = "剩\(rem5)%(5h)·\(rem7)%(7d)"
+    let menuTitle = "\(rem5)%(5h)·\(rem7)%(7d)"
     var detail = "5h窗口剩余\(rem5)%（\(cd)后重置） · 7天窗口剩余\(rem7)% · 重置额度\(resets)次"
     if used5 >= 100 { detail = "5h窗口已达上限（\(cd)后重置） · 7天窗口剩余\(rem7)% · 重置额度\(resets)次" }
-    let display = "\(plan) 剩\(rem5)%(5h) · 剩\(rem7)%(7d) · \(cd)"
+    let display = "\(plan) \(rem5)%(5h) · \(rem7)%(7d) · \(cd)"
     return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", menuTitle: menuTitle,
                            display: display, currency: nil, amount: nil, error: false, detail: detail)
 }
