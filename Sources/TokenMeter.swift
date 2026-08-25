@@ -2,17 +2,18 @@ import Cocoa
 import Foundation
 
 // ============================================================================
-//  TokenMeter — 菜单栏显示模型 API 余额 / ChatGPT Plus 用量
+//  TokenMeter — 菜单栏显示 DeepSeek 余额 + ChatGPT Plus 用量
 //  Providers:
 //    - deepseek : GET /user/balance (API key)
-//    - chatgpt  : GET /backend-api/wham/usage (ChatGPT OAuth access token, 走 Codex auth.json)
+//    - chatgpt  : GET /backend-api/wham/usage (ChatGPT OAuth access token, 读 Codex auth.json)
 //    - openai   : GET /dashboard/billing/credit_grants (API key)
 //    - anthropic: 占位
 //  连接统一走 config.proxy (如 "127.0.0.1:10808")；为空则用系统代理/直连。
 //  配置文件 config.json 与可执行文件同目录，或用 TOKENMETER_CONFIG 指定。
+//  图标 icon.png 与可执行文件同目录。
 // ============================================================================
 
-// ---------------- 配置模型（容错解码，缺字段用默认值） ----------------
+// ---------------- 配置模型（容错解码） ----------------
 struct ProviderConfig: Codable {
     var enabled: Bool
     var api_key: String
@@ -35,7 +36,6 @@ struct AppConfig: Codable {
     var refresh_minutes: Double
     var tokens_per_cny: Double
     var proxy: String?
-    var title_provider: String
     var providers: [String: ProviderConfig]
 
     init(from decoder: Decoder) throws {
@@ -43,14 +43,12 @@ struct AppConfig: Codable {
         refresh_minutes = try c.decodeIfPresent(Double.self, forKey: .refresh_minutes) ?? 10
         tokens_per_cny = try c.decodeIfPresent(Double.self, forKey: .tokens_per_cny) ?? 0
         proxy = try c.decodeIfPresent(String.self, forKey: .proxy)
-        title_provider = try c.decodeIfPresent(String.self, forKey: .title_provider) ?? "deepseek"
         providers = try c.decodeIfPresent([String: ProviderConfig].self, forKey: .providers) ?? [:]
     }
     init() {
         refresh_minutes = 10
         tokens_per_cny = 0
         proxy = nil
-        title_provider = "deepseek"
         providers = [:]
     }
 
@@ -70,7 +68,6 @@ struct AppConfig: Codable {
         return dir + "/config.json"
     }
 
-    // proxy "host:port" -> (host, port)，否则 nil（走系统代理/直连）
     var proxyParts: (String, Int)? {
         guard let proxy = proxy, !proxy.isEmpty else { return nil }
         let parts = proxy.split(separator: ":").map(String.init)
@@ -78,15 +75,15 @@ struct AppConfig: Codable {
         return nil
     }
 
-    // 默认遍历顺序，保证菜单栏标题稳定
     static let order = ["deepseek", "chatgpt", "openai", "anthropic"]
 }
 
 // ---------------- 余额结果 ----------------
 struct ProviderBalance {
-    let key: String        // 配置键：deepseek / chatgpt / openai / anthropic
-    let name: String       // 显示名：DeepSeek / ChatGPT / OpenAI / Anthropic
-    let symbol: String     // 菜单栏前缀：DS / GP / OA / AN
+    let key: String        // 配置键
+    let name: String       // 显示名
+    let symbol: String     // 前缀：DS / GP / OA / AN
+    let titleToken: String // 菜单栏标题片段（可空）
     let display: String    // 菜单行文案
     let currency: String?
     let amount: Double?
@@ -94,7 +91,7 @@ struct ProviderBalance {
     let detail: String?
 }
 
-// ---------------- 网络会话（走代理，全局一次） ----------------
+// ---------------- 网络会话（走代理） ----------------
 var httpSession: URLSession = URLSession(configuration: .default)
 
 func configureSession() {
@@ -106,7 +103,7 @@ func configureSession() {
         ]
         httpSession = URLSession(configuration: cfg)
     } else {
-        httpSession = URLSession(configuration: .default) // 用系统代理/直连
+        httpSession = URLSession(configuration: .default)
     }
 }
 
@@ -138,15 +135,16 @@ func fmtCountdown(_ seconds: Int) -> String {
 // ---------------- DeepSeek ----------------
 func fetchDeepSeek(key: String) -> ProviderBalance {
     if key.isEmpty {
-        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", display: "需配置 API Key",
-                               currency: nil, amount: nil, error: true,
+        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", titleToken: "",
+                               display: "需配置 API Key", currency: nil, amount: nil, error: true,
                                detail: "在 config.json 的 deepseek.api_key 填入你的密钥")
     }
     let (data, _) = httpGET("https://api.deepseek.com/user/balance",
                             headers: ["Authorization": "Bearer \(key)", "Accept": "application/json"])
     guard let data = data else {
-        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", display: "连接失败",
-                               currency: nil, amount: nil, error: true, detail: "无法访问 DeepSeek API")
+        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", titleToken: "",
+                               display: "连接失败", currency: nil, amount: nil, error: true,
+                               detail: "无法访问 DeepSeek API")
     }
     struct Resp: Decodable {
         let is_available: Bool?
@@ -161,12 +159,14 @@ func fetchDeepSeek(key: String) -> ProviderBalance {
     if let r = try? JSONDecoder().decode(Resp.self, from: data), let bi = r.balance_infos?.first {
         let cur = bi.currency ?? "CNY"
         let total = bi.total_balance ?? "?"
-        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", display: "\(cur) \(total)",
+        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS",
+                               titleToken: "DS ¥\(total)", display: "CNY \(total)",
                                currency: cur, amount: Double(total), error: false,
                                detail: "赠送 \(bi.granted_balance ?? "-") · 充值 \(bi.topped_up_balance ?? "-")")
     }
-    return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", display: "查询失败",
-                           currency: nil, amount: nil, error: true, detail: "接口未返回余额，请检查 API Key")
+    return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", titleToken: "",
+                           display: "查询失败", currency: nil, amount: nil, error: true,
+                           detail: "接口未返回余额，请检查 API Key")
 }
 
 // ---------------- ChatGPT Plus 用量 ----------------
@@ -180,8 +180,8 @@ func fetchChatGPT(tokenPath: String?) -> ProviderBalance {
     guard let data = FileManager.default.contents(atPath: authPath),
           let auth = try? JSONDecoder().decode(ChatAuth.self, from: data),
           let tok = auth.tokens?.access_token, !tok.isEmpty else {
-        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", display: "无会话凭证",
-                               currency: nil, amount: nil, error: true,
+        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", titleToken: "",
+                               display: "无会话凭证", currency: nil, amount: nil, error: true,
                                detail: "未找到凭证 \(authPath)，请先运行 codex login")
     }
     struct Wham: Decodable {
@@ -200,61 +200,72 @@ func fetchChatGPT(tokenPath: String?) -> ProviderBalance {
                                       "Accept": "application/json",
                                       "User-Agent": "TokenMeter/1.0"])
     guard let respData = respData else {
-        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", display: "连接失败",
-                               currency: nil, amount: nil, error: true,
+        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", titleToken: "",
+                               display: "连接失败", currency: nil, amount: nil, error: true,
                                detail: "无法访问 chatgpt.com，请确认代理已开启")
     }
     guard let w = try? JSONDecoder().decode(Wham.self, from: respData), let rl = w.rate_limit else {
         let errMsg = ((try? JSONSerialization.jsonObject(with: respData) as? [String: Any])?["error"] as? String)
                      ?? "接口未返回用量（token 可能过期）"
-        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", display: "查询失败",
-                               currency: nil, amount: nil, error: true, detail: errMsg)
+        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", titleToken: "",
+                               display: "查询失败", currency: nil, amount: nil, error: true, detail: errMsg)
     }
     let plan = (w.plan_type ?? "?").uppercased()
-    let used = rl.primary_window?.used_percent ?? 0
-    let countdown = fmtCountdown(rl.primary_window?.reset_after_seconds ?? 0)
-    let used7 = rl.secondary_window?.used_percent ?? 0
+    let used5  = rl.primary_window?.used_percent ?? 0
+    let rem5   = max(0, 100 - used5)
+    let cd     = fmtCountdown(rl.primary_window?.reset_after_seconds ?? 0)
+    let used7  = rl.secondary_window?.used_percent ?? 0
+    let rem7   = max(0, 100 - used7)
     let resets = w.rate_limit_reset_credits?.available_count ?? 0
-    let display = "\(plan) \(used)% · \(countdown)"
-    var detail = "主窗口(5h)已用\(used)% · \(countdown)后重置 · 7天窗口\(used7)% · 重置额度\(resets)次"
-    if used >= 100 { detail += "（已达上限）" }
-    return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", display: display,
-                           currency: nil, amount: nil, error: false, detail: detail)
+
+    // 菜单栏标题片段：显示 5h 与周额度 两个剩余量
+    let titleToken = "GP 剩\(rem5)%(5h)·\(rem7)%(7d)"
+
+    // 菜单行
+    var detail = "5h窗口剩余\(rem5)%（\(cd)后重置） · 7天窗口剩余\(rem7)% · 重置额度\(resets)次"
+    if used5 >= 100 { detail = "5h窗口已达上限（\(cd)后重置） · 7天窗口剩余\(rem7)% · 重置额度\(resets)次" }
+    let display = "\(plan) 剩\(rem5)%(5h) · 剩\(rem7)%(7d) · \(cd)"
+
+    return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", titleToken: titleToken,
+                           display: display, currency: nil, amount: nil, error: false, detail: detail)
 }
 
 // ---------------- OpenAI ----------------
 func fetchOpenAI(key: String) -> ProviderBalance {
     if key.isEmpty {
-        return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", display: "需配置 API Key",
-                               currency: nil, amount: nil, error: true,
+        return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", titleToken: "",
+                               display: "需配置 API Key", currency: nil, amount: nil, error: true,
                                detail: "在 config.json 的 openai.api_key 填入你的密钥")
     }
     let (data, _) = httpGET("https://api.openai.com/dashboard/billing/credit_grants",
                             headers: ["Authorization": "Bearer \(key)", "Accept": "application/json"])
     guard let data = data else {
-        return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", display: "连接失败",
-                               currency: nil, amount: nil, error: true, detail: "无法访问 OpenAI API")
+        return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", titleToken: "",
+                               display: "连接失败", currency: nil, amount: nil, error: true,
+                               detail: "无法访问 OpenAI API")
     }
     struct Resp: Decodable { let total_available: Double? }
     if let r = try? JSONDecoder().decode(Resp.self, from: data), let avail = r.total_available {
-        return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", display: "US$\(String(format: "%.2f", avail / 100))",
+        return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA",
+                               titleToken: "OA US$\(String(format: "%.2f", avail / 100))",
+                               display: "US$\(String(format: "%.2f", avail / 100))",
                                currency: "USD", amount: avail / 100, error: false,
                                detail: "OpenAI 积分（信用额度）")
     }
-    return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", display: "查询失败",
-                           currency: nil, amount: nil, error: true,
+    return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", titleToken: "",
+                           display: "查询失败", currency: nil, amount: nil, error: true,
                            detail: "OpenAI 未返回额度，或需浏览器会话/管理员权限")
 }
 
 // ---------------- Anthropic ----------------
 func fetchAnthropic(key: String) -> ProviderBalance {
     if key.isEmpty {
-        return ProviderBalance(key: "anthropic", name: "Anthropic", symbol: "AN", display: "需配置 API Key",
-                               currency: nil, amount: nil, error: true,
+        return ProviderBalance(key: "anthropic", name: "Anthropic", symbol: "AN", titleToken: "",
+                               display: "需配置 API Key", currency: nil, amount: nil, error: true,
                                detail: "在 config.json 的 anthropic.api_key 填入你的密钥")
     }
-    return ProviderBalance(key: "anthropic", name: "Anthropic", symbol: "AN", display: "暂不支持查询",
-                           currency: nil, amount: nil, error: true,
+    return ProviderBalance(key: "anthropic", name: "Anthropic", symbol: "AN", titleToken: "",
+                           display: "暂不支持查询", currency: nil, amount: nil, error: true,
                            detail: "Anthropic 没有公开余额接口，暂无法自动读取")
 }
 
@@ -269,6 +280,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "… 加载中"
+
+        // 应用图标（与可执行文件同目录）
+        func appDir() -> String { (CommandLine.arguments[0] as NSString).deletingLastPathComponent }
+        if let icon = NSImage(contentsOfFile: appDir() + "/icon.png") {
+            icon.size = NSSize(width: 20, height: 20)
+            statusItem.button?.image = icon
+            statusItem.button?.imagePosition = .imageLeading
+        }
 
         refresh()
 
@@ -302,19 +321,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func render(results: [ProviderBalance], cfg: AppConfig) {
-        // 菜单栏标题：优先 title_provider 对应的提供方，其次第一个成功的
-        var primary: ProviderBalance?
-        if !cfg.title_provider.isEmpty {
-            let tp = cfg.title_provider
-            if let m = results.first(where: { $0.key == tp && !$0.error }) { primary = m }
-            else if let m = results.first(where: { $0.key == tp }) { primary = m }
-        }
-        if primary == nil { primary = results.first(where: { !$0.error }) ?? results.first }
-
-        var title = "⏳"
-        if let p = primary {
-            let short = p.display.count > 30 ? String(p.display.prefix(30)) + "…" : p.display
-            title = p.symbol != "?" ? "\(p.symbol) \(short)" : short
+        // 菜单栏标题：拼接所有成功提供方的 titleToken（双拼等）
+        let tokens = results.filter { !$0.error && !$0.titleToken.isEmpty }.map { $0.titleToken }
+        var title: String
+        if tokens.isEmpty {
+            title = "⚠️ " + (results.first?.display ?? "无数据")
+        } else {
+            title = tokens.joined(separator: " | ")
+            if title.count > 60 { title = String(title.prefix(60)) + "…" }
         }
         statusItem.button?.title = title
         if ProcessInfo.processInfo.environment["TOKENMETER_DEBUG"] == "1" {
