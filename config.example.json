@@ -1,0 +1,18 @@
+{
+  "refresh_minutes": 10,
+  "tokens_per_cny": 0,
+  "providers": {
+    "deepseek": {
+      "enabled": true,
+      "api_key": "PASTE_YOUR_DEEPSEEK_API_KEY"
+    },
+    "openai": {
+      "enabled": false,
+      "api_key": ""
+    },
+    "anthropic": {
+      "enabled": false,
+      "api_key": ""
+    }
+  }
+}

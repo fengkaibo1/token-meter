@@ -1,0 +1,5 @@
+# 忽略编译产物与含密钥的配置
+token-meter
+config.json
+*.o
+.DS_Store
