@@ -1,8 +1,21 @@
 # TokenMeter
 
-一个常驻 macOS 菜单栏的小工具，**实时显示你的模型 API 余额**（默认 DeepSeek，可扩展 OpenAI / Anthropic）。
+一个常驻 macOS 菜单栏的小工具，**实时显示你的模型 API 余额 + ChatGPT Plus 用量**。
 
-菜单栏显示形如 `DS CNY 50.76`，点击图标弹出菜单查看各提供方余额明细、刷新、打开配置、退出。
+菜单栏默认显示形如 `GP PLUS 100% · 1h 5m`（ChatGPT Plus 用量），点击图标弹出菜单查看各提供方明细（DeepSeek 余额、ChatGPT 用量、并可扩展 OpenAI/Anthropic）、刷新、打开配置、退出。
+
+## 支持的数据源
+
+| key | 显示内容 | 凭据来源 |
+|---|---|---|
+| `deepseek` | API 账户余额（CNY） | `deepseek.api_key`（API key） |
+| `chatgpt` | **ChatGPT Plus 用量**（5h 主窗口用量%、重置倒计时、7天窗口%、手动重置额度） | 读 `~/.codex/auth.json` 的 ChatGPT OAuth access token（Codex CLI 会话，无需手动登录） |
+| `openai` | OpenAI API 积分 | `openai.api_key`（需 OpenAI API key + 代理） |
+| `anthropic` | 占位（无公开余额接口） | 暂不支持 |
+
+> 前提说明：
+> - ChatGPT Plus 用量通过 `GET https://chatgpt.com/backend-api/wham/usage` 读取（Codex CLI 同款端点），**不是**用 OpenAI API key。access token 由 Codex 与会话保留在 `~/.codex/auth.json`，有效期约 10 天，失效时重新 `codex login` 即可。
+> - ChatGPT/OpenAI 域名在部分网络（如国内）被墙，需走代理。App 统一通过 `config.json` 的 `proxy` 字段路由（如 `127.0.0.1:10808`）；留空则用系统代理/直连。
 
 ## 目录结构
 
@@ -10,7 +23,7 @@
 token-meter/
 ├── Sources/TokenMeter.swift    # 主程序（原生 Swift / NSStatusItem）
 ├── config.example.json         # 配置模板（无密钥）
-├── config.json                 # 你的配置（含 API Key，已被 .gitignore 忽略）
+├── config.json                 # 你的配置（含密钥，已被 .gitignore 忽略）
 ├── build.sh                    # 编译脚本
 ├── install-launchd.sh          # 注册为登录启动项
 ├── token-meter                 # 编译产物（.gitignore 忽略）
@@ -26,14 +39,17 @@ cd ~/Documents/Hermes/token-meter
 
 ## 配置
 
-打开 `config.json`，填入 DeepSeek API Key 即可：
+打开 `config.json`：
 
 ```json
 {
   "refresh_minutes": 10,
   "tokens_per_cny": 0,
+  "proxy": "127.0.0.1:10808",
+  "title_provider": "chatgpt",
   "providers": {
     "deepseek": { "enabled": true,  "api_key": "sk-XXXX" },
+    "chatgpt":  { "enabled": true,  "api_key": "", "token_path": "~/.codex/auth.json" },
     "openai":   { "enabled": false, "api_key": "" },
     "anthropic":{ "enabled": false, "api_key": "" }
   }
@@ -41,8 +57,10 @@ cd ~/Documents/Hermes/token-meter
 ```
 
 - `refresh_minutes`：多久刷新一次（最小 1 分钟）。
-- `tokens_per_cny`：>0 时，额外按人民币金额估算可调用 token 数（如 700000 表示每 1 元约 70 万 token，按你的模型单价调整）。
-- `providers`：`enabled=true` 的提供方会出现在菜单栏/菜单。DeepSeek 走 `/user/balance`；OpenAI 走 `dashboard/billing/credit_grants`；Anthropic 无公开消费者余额接口，暂仅提示。
+- `proxy`：HTTP 代理 `host:port`。留空则用系统代理/直连。**默认 `127.0.0.1:10808`，用于访问 chatgpt.com。**
+- `title_provider`：菜单栏标题显示哪个提供方。`deepseek` = 余额，`chatgpt` = Plus 用量。切换即可改标题。
+- `tokens_per_cny`：>0 时，按人民币金额估算可调用 token 数。
+- `providers`：`enabled=true` 的提供方会出现在菜单里。
 
 > 配置查找顺序：环境变量 `TOKENMETER_CONFIG` 指定的路径 → 可执行文件同目录下的 `config.json`。
 
@@ -61,14 +79,16 @@ cd ~/Documents/Hermes/token-meter
 ./install-launchd.sh
 ```
 
-卸载开机自启：
+卸除开机自启：
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/com.fkbo.tokenmeter.plist
+launchctl bootout gui/$(id -u)/com.fkbo.tokenmeter
+rm ~/Library/LaunchAgents/com.fkbo.tokenmeter.plist
 ```
 
 ## 说明
 
-- 原生 Swift 菜单栏应用，无需 Python 运行时。
-- 无 Dock 图标，纯菜单栏常驻。
-- 调试方法：`TOKENMETER_DEBUG=1 ./token-meter`，会把渲染的菜单栏标题打印到 stdout。
+- 原生 Swift 菜单栏应用，无 Dock 图标，无需 Python 运行时。
+- 手动刷新：点菜单栏图标 → 「刷新」；或改 `refresh_minutes`。
+- 调试：`TOKENMETER_DEBUG=1 ./token-meter`，把渲染的标题与各提供方文案打印到 stdout。
+- 注意：`config.json` 含密钥、`token-meter` 为产物，均已被 `.gitignore` 忽略，不会提交到版本库。

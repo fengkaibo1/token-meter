@@ -1,10 +1,17 @@
 {
   "refresh_minutes": 10,
   "tokens_per_cny": 0,
+  "proxy": "127.0.0.1:10808",
+  "title_provider": "chatgpt",
   "providers": {
     "deepseek": {
       "enabled": true,
       "api_key": "PASTE_YOUR_DEEPSEEK_API_KEY"
+    },
+    "chatgpt": {
+      "enabled": true,
+      "api_key": "",
+      "token_path": "~/.codex/auth.json"
     },
     "openai": {
       "enabled": false,
