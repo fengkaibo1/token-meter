@@ -2,18 +2,16 @@ import Cocoa
 import Foundation
 
 // ============================================================================
-//  TokenMeter — 菜单栏显示 DeepSeek 余额 + ChatGPT Plus 用量
+//  TokenMeter — 菜单栏两个图标：DeepSeek 余额 + ChatGPT Plus 用量
 //  Providers:
-//    - deepseek : GET /user/balance (API key)
-//    - chatgpt  : GET /backend-api/wham/usage (ChatGPT OAuth access token, 读 Codex auth.json)
-//    - openai   : GET /dashboard/billing/credit_grants (API key)
-//    - anthropic: 占位
-//  连接统一走 config.proxy (如 "127.0.0.1:10808")；为空则用系统代理/直连。
-//  配置文件 config.json 与可执行文件同目录，或用 TOKENMETER_CONFIG 指定。
-//  图标 icon.png 与可执行文件同目录。
+//    - deepseek : GET /user/balance (API key)            图标: deepseek.png (官方蓝鲸)
+//    - chatgpt  : GET /backend-api/wham/usage (OAuth token) 图标: chatgpt.png (官方结)
+//    - openai / anthropic : 可选
+//  每个 provider 独占一个菜单栏项（官方 logo + 各自信息 + 各自菜单）。
+//  连接统一走 config.proxy；为空则用系统代理/直连。
+//  图标与 config.json 位于可执行文件同目录。
 // ============================================================================
 
-// ---------------- 配置模型（容错解码） ----------------
 struct ProviderConfig: Codable {
     var enabled: Bool
     var api_key: String
@@ -59,41 +57,36 @@ struct AppConfig: Codable {
         else { return AppConfig() }
         return cfg
     }
-
     static func configPath() -> String {
-        if let env = ProcessInfo.processInfo.environment["TOKENMETER_CONFIG"], !env.isEmpty {
-            return env
-        }
-        let dir = (CommandLine.arguments[0] as NSString).deletingLastPathComponent
-        return dir + "/config.json"
+        if let env = ProcessInfo.processInfo.environment["TOKENMETER_CONFIG"], !env.isEmpty { return env }
+        return appDir() + "/config.json"
     }
-
     var proxyParts: (String, Int)? {
         guard let proxy = proxy, !proxy.isEmpty else { return nil }
         let parts = proxy.split(separator: ":").map(String.init)
         if parts.count == 2, let port = Int(parts[1]) { return (parts[0], port) }
         return nil
     }
-
     static let order = ["deepseek", "chatgpt", "openai", "anthropic"]
 }
 
-// ---------------- 余额结果 ----------------
+func appDir() -> String { (CommandLine.arguments[0] as NSString).deletingLastPathComponent }
+
+// ---------------- 结果 ----------------
 struct ProviderBalance {
     let key: String        // 配置键
     let name: String       // 显示名
-    let symbol: String     // 前缀：DS / GP / OA / AN
-    let titleToken: String // 菜单栏标题片段（可空）
-    let display: String    // 菜单行文案
+    let symbol: String     // 菜单行前缀
+    let menuTitle: String  // 菜单栏标题文本（图标已表明身份）
+    let display: String    // 菜单行主文案
     let currency: String?
     let amount: Double?
     let error: Bool
     let detail: String?
 }
 
-// ---------------- 网络会话（走代理） ----------------
+// ---------------- 网络 ----------------
 var httpSession: URLSession = URLSession(configuration: .default)
-
 func configureSession() {
     if let (host, port) = AppConfig.load().proxyParts {
         let cfg = URLSessionConfiguration.default
@@ -116,9 +109,7 @@ func httpGET(_ url: String, headers: [String: String], timeout: TimeInterval = 1
     var data: Data? = nil
     var err: Error? = nil
     httpSession.dataTask(with: request) { d, _, e in
-        data = d
-        err = e
-        sem.signal()
+        data = d; err = e; sem.signal()
     }.resume()
     _ = sem.wait(timeout: .now() + timeout + 2)
     return (data, err)
@@ -135,14 +126,14 @@ func fmtCountdown(_ seconds: Int) -> String {
 // ---------------- DeepSeek ----------------
 func fetchDeepSeek(key: String) -> ProviderBalance {
     if key.isEmpty {
-        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", titleToken: "",
+        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", menuTitle: "⚠︎",
                                display: "需配置 API Key", currency: nil, amount: nil, error: true,
                                detail: "在 config.json 的 deepseek.api_key 填入你的密钥")
     }
     let (data, _) = httpGET("https://api.deepseek.com/user/balance",
                             headers: ["Authorization": "Bearer \(key)", "Accept": "application/json"])
     guard let data = data else {
-        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", titleToken: "",
+        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", menuTitle: "⚠︎",
                                display: "连接失败", currency: nil, amount: nil, error: true,
                                detail: "无法访问 DeepSeek API")
     }
@@ -159,17 +150,16 @@ func fetchDeepSeek(key: String) -> ProviderBalance {
     if let r = try? JSONDecoder().decode(Resp.self, from: data), let bi = r.balance_infos?.first {
         let cur = bi.currency ?? "CNY"
         let total = bi.total_balance ?? "?"
-        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS",
-                               titleToken: "DS ¥\(total)", display: "CNY \(total)",
-                               currency: cur, amount: Double(total), error: false,
+        return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", menuTitle: "¥\(total)",
+                               display: "余额 \(cur) \(total)", currency: cur, amount: Double(total), error: false,
                                detail: "赠送 \(bi.granted_balance ?? "-") · 充值 \(bi.topped_up_balance ?? "-")")
     }
-    return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", titleToken: "",
+    return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", menuTitle: "⚠︎",
                            display: "查询失败", currency: nil, amount: nil, error: true,
                            detail: "接口未返回余额，请检查 API Key")
 }
 
-// ---------------- ChatGPT Plus 用量 ----------------
+// ---------------- ChatGPT Plus ----------------
 func fetchChatGPT(tokenPath: String?) -> ProviderBalance {
     let key = "chatgpt"
     let authPath = (tokenPath?.isEmpty == false) ? (tokenPath! as NSString).expandingTildeInPath
@@ -180,7 +170,7 @@ func fetchChatGPT(tokenPath: String?) -> ProviderBalance {
     guard let data = FileManager.default.contents(atPath: authPath),
           let auth = try? JSONDecoder().decode(ChatAuth.self, from: data),
           let tok = auth.tokens?.access_token, !tok.isEmpty else {
-        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", titleToken: "",
+        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", menuTitle: "⚠︎",
                                display: "无会话凭证", currency: nil, amount: nil, error: true,
                                detail: "未找到凭证 \(authPath)，请先运行 codex login")
     }
@@ -200,59 +190,55 @@ func fetchChatGPT(tokenPath: String?) -> ProviderBalance {
                                       "Accept": "application/json",
                                       "User-Agent": "TokenMeter/1.0"])
     guard let respData = respData else {
-        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", titleToken: "",
+        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", menuTitle: "⚠︎",
                                display: "连接失败", currency: nil, amount: nil, error: true,
                                detail: "无法访问 chatgpt.com，请确认代理已开启")
     }
     guard let w = try? JSONDecoder().decode(Wham.self, from: respData), let rl = w.rate_limit else {
         let errMsg = ((try? JSONSerialization.jsonObject(with: respData) as? [String: Any])?["error"] as? String)
                      ?? "接口未返回用量（token 可能过期）"
-        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", titleToken: "",
+        return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", menuTitle: "⚠︎",
                                display: "查询失败", currency: nil, amount: nil, error: true, detail: errMsg)
     }
     let plan = (w.plan_type ?? "?").uppercased()
-    let used5  = rl.primary_window?.used_percent ?? 0
-    let rem5   = max(0, 100 - used5)
-    let cd     = fmtCountdown(rl.primary_window?.reset_after_seconds ?? 0)
-    let used7  = rl.secondary_window?.used_percent ?? 0
-    let rem7   = max(0, 100 - used7)
+    let used5 = rl.primary_window?.used_percent ?? 0
+    let rem5 = max(0, 100 - used5)
+    let cd = fmtCountdown(rl.primary_window?.reset_after_seconds ?? 0)
+    let used7 = rl.secondary_window?.used_percent ?? 0
+    let rem7 = max(0, 100 - used7)
     let resets = w.rate_limit_reset_credits?.available_count ?? 0
 
-    // 菜单栏标题片段：显示 5h 与周额度 两个剩余量
-    let titleToken = "GP 剩\(rem5)%(5h)·\(rem7)%(7d)"
-
-    // 菜单行
+    let menuTitle = "剩\(rem5)%(5h)·\(rem7)%(7d)"
     var detail = "5h窗口剩余\(rem5)%（\(cd)后重置） · 7天窗口剩余\(rem7)% · 重置额度\(resets)次"
     if used5 >= 100 { detail = "5h窗口已达上限（\(cd)后重置） · 7天窗口剩余\(rem7)% · 重置额度\(resets)次" }
     let display = "\(plan) 剩\(rem5)%(5h) · 剩\(rem7)%(7d) · \(cd)"
-
-    return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", titleToken: titleToken,
+    return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", menuTitle: menuTitle,
                            display: display, currency: nil, amount: nil, error: false, detail: detail)
 }
 
 // ---------------- OpenAI ----------------
 func fetchOpenAI(key: String) -> ProviderBalance {
     if key.isEmpty {
-        return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", titleToken: "",
+        return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", menuTitle: "⚠︎",
                                display: "需配置 API Key", currency: nil, amount: nil, error: true,
                                detail: "在 config.json 的 openai.api_key 填入你的密钥")
     }
     let (data, _) = httpGET("https://api.openai.com/dashboard/billing/credit_grants",
                             headers: ["Authorization": "Bearer \(key)", "Accept": "application/json"])
     guard let data = data else {
-        return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", titleToken: "",
+        return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", menuTitle: "⚠︎",
                                display: "连接失败", currency: nil, amount: nil, error: true,
                                detail: "无法访问 OpenAI API")
     }
     struct Resp: Decodable { let total_available: Double? }
     if let r = try? JSONDecoder().decode(Resp.self, from: data), let avail = r.total_available {
         return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA",
-                               titleToken: "OA US$\(String(format: "%.2f", avail / 100))",
+                               menuTitle: "US$\(String(format: "%.2f", avail / 100))",
                                display: "US$\(String(format: "%.2f", avail / 100))",
                                currency: "USD", amount: avail / 100, error: false,
                                detail: "OpenAI 积分（信用额度）")
     }
-    return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", titleToken: "",
+    return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", menuTitle: "⚠︎",
                            display: "查询失败", currency: nil, amount: nil, error: true,
                            detail: "OpenAI 未返回额度，或需浏览器会话/管理员权限")
 }
@@ -260,48 +246,62 @@ func fetchOpenAI(key: String) -> ProviderBalance {
 // ---------------- Anthropic ----------------
 func fetchAnthropic(key: String) -> ProviderBalance {
     if key.isEmpty {
-        return ProviderBalance(key: "anthropic", name: "Anthropic", symbol: "AN", titleToken: "",
+        return ProviderBalance(key: "anthropic", name: "Anthropic", symbol: "AN", menuTitle: "⚠︎",
                                display: "需配置 API Key", currency: nil, amount: nil, error: true,
                                detail: "在 config.json 的 anthropic.api_key 填入你的密钥")
     }
-    return ProviderBalance(key: "anthropic", name: "Anthropic", symbol: "AN", titleToken: "",
+    return ProviderBalance(key: "anthropic", name: "Anthropic", symbol: "AN", menuTitle: "⚠︎",
                            display: "暂不支持查询", currency: nil, amount: nil, error: true,
                            detail: "Anthropic 没有公开余额接口，暂无法自动读取")
 }
 
 // ---------------- 主应用 ----------------
 class AppDelegate: NSObject, NSApplicationDelegate {
-    var statusItem: NSStatusItem!
+    var items: [String: NSStatusItem] = [:]
     var timer: Timer?
-    let lastUpdated = Date()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         configureSession()
+        let cfg = AppConfig.load()
 
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.title = "… 加载中"
-
-        // 应用图标（与可执行文件同目录）
-        func appDir() -> String { (CommandLine.arguments[0] as NSString).deletingLastPathComponent }
-        if let icon = NSImage(contentsOfFile: appDir() + "/icon.png") {
-            icon.size = NSSize(width: 20, height: 20)
-            statusItem.button?.image = icon
-            statusItem.button?.imagePosition = .imageLeading
+        for key in AppConfig.order {
+            guard let pc = cfg.providers[key], pc.enabled else { continue }
+            let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+            item.button?.title = "…"
+            applyIcon(to: item, key: key)
+            items[key] = item
         }
 
         refresh()
-
-        let seconds = max(60, AppConfig.load().refresh_minutes * 60)
+        let seconds = max(60, cfg.refresh_minutes * 60)
         timer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: true) { [weak self] _ in
             self?.refresh()
         }
+    }
+
+    func applyIcon(to item: NSStatusItem, key: String) {
+        let fileName: String?
+        switch key {
+        case "deepseek": fileName = "deepseek.png"
+        case "chatgpt":  fileName = "chatgpt.png"
+        default:         fileName = nil
+        }
+        guard let name = fileName,
+              let img = NSImage(contentsOfFile: appDir() + "/" + name) else { return }
+        // 缩到菜单栏高度 ~17pt，保留等比
+        let targetH: CGFloat = 17
+        let s = targetH / img.size.height
+        img.size = NSSize(width: img.size.width * s, height: targetH)
+        item.button?.image = img
+        item.button?.imagePosition = .imageLeading
+        if key == "chatgpt" { img.isTemplate = true } // 深色菜单栏自动变白
     }
 
     func refresh() {
         let cfg = AppConfig.load()
         let order = AppConfig.order
         DispatchQueue.global(qos: .utility).async {
-            var results: [ProviderBalance] = []
+            var results: [String: ProviderBalance] = [:]
             for name in order {
                 guard let pc = cfg.providers[name], pc.enabled else { continue }
                 let bal: ProviderBalance
@@ -312,86 +312,61 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 case "anthropic": bal = fetchAnthropic(key: pc.api_key)
                 default:          continue
                 }
-                results.append(bal)
+                results[name] = bal
             }
-            DispatchQueue.main.async {
-                self.render(results: results, cfg: cfg)
-            }
+            DispatchQueue.main.async { self.apply(results: results, cfg: cfg) }
         }
     }
 
-    func render(results: [ProviderBalance], cfg: AppConfig) {
-        // 菜单栏标题：拼接所有成功提供方的 titleToken（双拼等）
-        let tokens = results.filter { !$0.error && !$0.titleToken.isEmpty }.map { $0.titleToken }
-        var title: String
-        if tokens.isEmpty {
-            title = "⚠️ " + (results.first?.display ?? "无数据")
-        } else {
-            title = tokens.joined(separator: " | ")
-            if title.count > 60 { title = String(title.prefix(60)) + "…" }
-        }
-        statusItem.button?.title = title
+    func apply(results: [String: ProviderBalance], cfg: AppConfig) {
         if ProcessInfo.processInfo.environment["TOKENMETER_DEBUG"] == "1" {
-            print("TokenMeter DEBUG menu-title => \(title)")
-            for r in results {
-                print("TokenMeter DEBUG row => [\(r.key)] \(r.symbol)  \(r.display)  || \(r.detail ?? "")")
+            for (key, bal) in results {
+                print("TokenMeter DEBUG => [\(key)] title=\(bal.menuTitle) | row=\(bal.display) | \(bal.detail ?? "")")
             }
             fflush(stdout)
         }
+        for (key, item) in items {
+            guard let bal = results[key] else { continue }
+            item.button?.title = bal.menuTitle
+            item.menu = buildMenu(for: bal, cfg: cfg)
+        }
+    }
 
-        // 菜单
+    func buildMenu(for bal: ProviderBalance, cfg: AppConfig) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
 
-        if results.isEmpty {
-            let item = NSMenuItem(title: "未启用任何提供方", action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            menu.addItem(item)
-        } else {
-            for r in results {
-                let item = NSMenuItem(title: "\(r.symbol)  \(r.display)", action: nil, keyEquivalent: "")
-                item.isEnabled = false
-                menu.addItem(item)
-                if let detail = r.detail {
-                    let d = NSMenuItem(title: "        \(detail)", action: nil, keyEquivalent: "")
-                    d.isEnabled = false
-                    menu.addItem(d)
-                }
-            }
+        let main = NSMenuItem(title: bal.display, action: nil, keyEquivalent: "")
+        main.isEnabled = false
+        menu.addItem(main)
+        if let detail = bal.detail {
+            let d = NSMenuItem(title: "        \(detail)", action: nil, keyEquivalent: "")
+            d.isEnabled = false
+            menu.addItem(d)
         }
-
-        if cfg.tokens_per_cny > 0, let deep = results.first(where: { $0.key == "deepseek" && ($0.currency?.uppercased() == "CNY" || $0.currency == nil) }),
-           let amount = deep.amount {
+        if cfg.tokens_per_cny > 0, let amount = bal.amount, bal.currency?.uppercased() == "CNY" {
             let t = NSMenuItem(title: "≈ \(Int(amount * cfg.tokens_per_cny)) tokens 可调用", action: nil, keyEquivalent: "")
             t.isEnabled = false
             menu.addItem(t)
         }
 
         menu.addItem(NSMenuItem.separator())
-
         let refreshItem = NSMenuItem(title: "刷新", action: #selector(doRefresh), keyEquivalent: "r")
         refreshItem.target = self
         menu.addItem(refreshItem)
-
         let openCfg = NSMenuItem(title: "打开配置文件", action: #selector(openConfig), keyEquivalent: ",")
         openCfg.target = self
         menu.addItem(openCfg)
-
         menu.addItem(NSMenuItem.separator())
         let quit = NSMenuItem(title: "退出 TokenMeter", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
-
-        statusItem.menu = menu
+        return menu
     }
 
     @objc func doRefresh() { refresh() }
     @objc func openConfig() {
-        let path = AppConfig.configPath()
-        NSWorkspace.shared.open(URL(fileURLWithPath: path))
-        if !FileManager.default.fileExists(atPath: path) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: AppConfig.configPath()).deletingLastPathComponent())
-        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: AppConfig.configPath()))
     }
     @objc func quit() { NSApplication.shared.terminate(nil) }
 }
