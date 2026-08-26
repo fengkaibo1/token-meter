@@ -86,21 +86,24 @@ struct ProviderBalance {
 }
 
 // ---------------- 网络 ----------------
-var httpSession: URLSession = URLSession(configuration: .default)
+var directSession: URLSession = URLSession(configuration: .default) // 直连(DeepSeek 国内可直连)
+var proxySession:  URLSession = URLSession(configuration: .default) // 走代理(ChatGPT/OpenAI)
+
 func configureSession() {
+    directSession = URLSession(configuration: .default)
     if let (host, port) = AppConfig.load().proxyParts {
         let cfg = URLSessionConfiguration.default
         cfg.connectionProxyDictionary = [
             "HTTPEnable": 1, "HTTPProxy": host, "HTTPPort": port,
             "HTTPSEnable": 1, "HTTPSProxy": host, "HTTPSPort": port,
         ]
-        httpSession = URLSession(configuration: cfg)
+        proxySession = URLSession(configuration: cfg)
     } else {
-        httpSession = URLSession(configuration: .default)
+        proxySession = URLSession(configuration: .default)
     }
 }
 
-func httpGET(_ url: String, headers: [String: String], timeout: TimeInterval = 12) -> (Data?, Error?) {
+func httpGET(_ session: URLSession, _ url: String, headers: [String: String], timeout: TimeInterval = 12) -> (Data?, Error?) {
     guard let u = URL(string: url) else { return (nil, nil) }
     var request = URLRequest(url: u, timeoutInterval: timeout)
     request.httpMethod = "GET"
@@ -108,7 +111,7 @@ func httpGET(_ url: String, headers: [String: String], timeout: TimeInterval = 1
     let sem = DispatchSemaphore(value: 0)
     var data: Data? = nil
     var err: Error? = nil
-    httpSession.dataTask(with: request) { d, _, e in
+    session.dataTask(with: request) { d, _, e in
         data = d; err = e; sem.signal()
     }.resume()
     _ = sem.wait(timeout: .now() + timeout + 2)
@@ -130,7 +133,7 @@ func fetchDeepSeek(key: String) -> ProviderBalance {
                                display: "需配置 API Key", currency: nil, amount: nil, error: true,
                                detail: "在 config.json 的 deepseek.api_key 填入你的密钥")
     }
-    let (data, _) = httpGET("https://api.deepseek.com/user/balance",
+    let (data, _) = httpGET(directSession, "https://api.deepseek.com/user/balance",
                             headers: ["Authorization": "Bearer \(key)", "Accept": "application/json"])
     guard let data = data else {
         return ProviderBalance(key: "deepseek", name: "DeepSeek", symbol: "DS", menuTitle: "⚠︎",
@@ -185,14 +188,14 @@ func fetchChatGPT(tokenPath: String?) -> ProviderBalance {
         }
         struct RC: Decodable { let available_count: Int? }
     }
-    let (respData, _) = httpGET("https://chatgpt.com/backend-api/wham/usage",
+    let (respData, _) = httpGET(proxySession, "https://chatgpt.com/backend-api/wham/usage",
                             headers: ["Authorization": "Bearer \(tok)",
                                       "Accept": "application/json",
                                       "User-Agent": "TokenMeter/1.0"])
     guard let respData = respData else {
         return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", menuTitle: "⚠︎",
                                display: "连接失败", currency: nil, amount: nil, error: true,
-                               detail: "无法访问 chatgpt.com，请确认代理已开启")
+                               detail: "无法访问 chatgpt.com —— 代理可能未启动，请打开代理后再试")
     }
     guard let w = try? JSONDecoder().decode(Wham.self, from: respData), let rl = w.rate_limit else {
         let errMsg = ((try? JSONSerialization.jsonObject(with: respData) as? [String: Any])?["error"] as? String)
@@ -223,7 +226,7 @@ func fetchOpenAI(key: String) -> ProviderBalance {
                                display: "需配置 API Key", currency: nil, amount: nil, error: true,
                                detail: "在 config.json 的 openai.api_key 填入你的密钥")
     }
-    let (data, _) = httpGET("https://api.openai.com/dashboard/billing/credit_grants",
+    let (data, _) = httpGET(proxySession, "https://api.openai.com/dashboard/billing/credit_grants",
                             headers: ["Authorization": "Bearer \(key)", "Accept": "application/json"])
     guard let data = data else {
         return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", menuTitle: "⚠︎",

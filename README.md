@@ -21,8 +21,9 @@
 | `anthropic` | 无 | 占位（无公开余额接口） | 暂不支持 |
 
 > 前提说明：
+> - DeepSeek 走**直连**（国内可直连，无需代理）；ChatGPT/OpenAI 走 `config.json` 的 `proxy`。所以重启后即便代理没开，DeepSeek 余额也会正常显示；ChatGPT 则提示「代理可能未启动」。
 > - ChatGPT Plus 用量通过 `GET https://chatgpt.com/backend-api/wham/usage` 读取（Codex CLI 同款端点），**不是**用 OpenAI API key。access token 由 Codex 保留在 `~/.codex/auth.json`，有效期约 10 天，失效时重新 `codex login` 即可。
-> - ChatGPT/OpenAI 域名在部分网络（如国内）被墙，需走代理。App 统一通过 `config.json` 的 `proxy` 字段路由（如 `127.0.0.1:10808`）；留空则用系统代理/直连。
+> - ChatGPT/OpenAI 域名在部分网络（如国内）被墙，需走代理；代理客户端请设为**登录时自动启动**，否则重启后 ChatGPT 项需手动开代理才显示。
 
 ## 目录结构
 
