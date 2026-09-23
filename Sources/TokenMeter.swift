@@ -103,7 +103,7 @@ func configureSession() {
     }
 }
 
-func httpGET(_ session: URLSession, _ url: String, headers: [String: String], timeout: TimeInterval = 12) -> (Data?, Error?) {
+func httpGET(_ session: URLSession, _ url: String, headers: [String: String], timeout: TimeInterval = 30) -> (Data?, Error?) {
     guard let u = URL(string: url) else { return (nil, nil) }
     var request = URLRequest(url: u, timeoutInterval: timeout)
     request.httpMethod = "GET"
