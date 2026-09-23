@@ -66,7 +66,9 @@ cd ~/Documents/Hermes/token-meter
 ```
 
 - `refresh_minutes`：多久刷新一次。每个启用的 provider 各占一个菜单栏项。
-- `proxy`：HTTP 代理 `host:port`。留空则用系统代理/直连。**默认 `127.0.0.1:10808`，用于访问 chatgpt.com。**
+- `proxy`：ChatGPT/OpenAI 用的 HTTP 代理 `host:port`（DeepSeek 始终直连、不经代理）。
+  - **务必填成你当前代理实际在用的端口**（换代理后要同步改这里），例如 `127.0.0.1:1082`。
+  - 注意：经代理访问 `chatgpt.com` 较慢（实测约 17~20 秒），故 `httpGET` 超时设为 **30 秒**；若你的代理更慢，可把 `Sources/TokenMeter.swift` 里 `httpGET` 的 `timeout` 再调大，否则会间歇性显示"连接失败"。
 - `tokens_per_cny`：>0 时，按人民币金额估算可调用 token 数（出现在菜单里）。
 - `providers`：`enabled=true` 的 provider 会出现在菜单栏（deepseek/chatgpt 带官方图标）。
 
