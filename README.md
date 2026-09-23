@@ -66,10 +66,7 @@ cd ~/Documents/Hermes/token-meter
 ```
 
 - `refresh_minutes`：多久刷新一次。每个启用的 provider 各占一个菜单栏项。
-- `proxy`：ChatGPT/OpenAI 用的代理。
-  - `"auto"`（默认，推荐）：**自动跟随 macOS 系统代理**（换代理后无需改配置），并按「上次成功的代理 → 系统代理 → 常见端口 (1082/10808/1087/7890/7897)」依次探测，取第一个可用的。
-  - `"127.0.0.1:7890"`：写死某个代理端口；也支持逗号分隔多个，如 `"127.0.0.1:1082,127.0.0.1:10808"`（逐个尝试）。
-  - DeepSeek 始终走直连，不经代理。
+- `proxy`：HTTP 代理 `host:port`。留空则用系统代理/直连。**默认 `127.0.0.1:10808`，用于访问 chatgpt.com。**
 - `tokens_per_cny`：>0 时，按人民币金额估算可调用 token 数（出现在菜单里）。
 - `providers`：`enabled=true` 的 provider 会出现在菜单栏（deepseek/chatgpt 带官方图标）。
 
