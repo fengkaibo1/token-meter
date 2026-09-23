@@ -1,7 +1,7 @@
 {
   "refresh_minutes": 10,
   "tokens_per_cny": 0,
-  "proxy": "127.0.0.1:10808",
+  "proxy": "auto",
   "providers": {
     "deepseek": {
       "enabled": true,

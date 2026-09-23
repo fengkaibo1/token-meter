@@ -1,5 +1,6 @@
 import Cocoa
 import Foundation
+import SystemConfiguration
 
 // ============================================================================
 //  TokenMeter — 菜单栏两个图标：DeepSeek 余额 + ChatGPT Plus 用量
@@ -87,20 +88,45 @@ struct ProviderBalance {
 
 // ---------------- 网络 ----------------
 var directSession: URLSession = URLSession(configuration: .default) // 直连(DeepSeek 国内可直连)
-var proxySession:  URLSession = URLSession(configuration: .default) // 走代理(ChatGPT/OpenAI)
+var activeProxy: String? = nil   // 上次成功的代理 "host:port"
 
-func configureSession() {
-    directSession = URLSession(configuration: .default)
-    if let (host, port) = AppConfig.load().proxyParts {
-        let cfg = URLSessionConfiguration.default
-        cfg.connectionProxyDictionary = [
-            "HTTPEnable": 1, "HTTPProxy": host, "HTTPPort": port,
-            "HTTPSEnable": 1, "HTTPSProxy": host, "HTTPSPort": port,
-        ]
-        proxySession = URLSession(configuration: cfg)
-    } else {
-        proxySession = URLSession(configuration: .default)
+// 读取 macOS 系统代理(换代理时系统代理会更新 → 自动跟随)
+func systemProxyString() -> String? {
+    guard let d = SCDynamicStoreCopyProxies(nil) as? [String: Any] else { return nil }
+    func pick(_ hk: String, _ pk: String, _ ek: String) -> String? {
+        guard (d[ek] as? Int) == 1, let h = d[hk] as? String, let p = d[pk] as? Int else { return nil }
+        return "\(h):\(p)"
     }
+    return pick("HTTPSProxy", "HTTPSPort", "HTTPSEnable")
+        ?? pick("HTTPProxy", "HTTPPort", "HTTPEnable")
+        ?? pick("SOCKSProxy", "SOCKSPort", "SOCKSEnable")
+}
+
+func sessionWithProxy(_ proxy: String) -> URLSession? {
+    let parts = proxy.split(separator: ":").map(String.init)
+    guard parts.count == 2, let port = Int(parts[1]) else { return nil }
+    let cfg = URLSessionConfiguration.default
+    cfg.connectionProxyDictionary = [
+        "HTTPEnable": 1, "HTTPProxy": parts[0], "HTTPPort": port,
+        "HTTPSEnable": 1, "HTTPSProxy": parts[0], "HTTPSPort": port,
+    ]
+    return URLSession(configuration: cfg)
+}
+
+// 候选代理顺序：上次成功 → 系统代理(自动) → config 显式 → 常见端口兜底
+func candidateProxies(_ cfg: AppConfig) -> [String] {
+    var list: [String] = []
+    func add(_ s: String?) {
+        guard let s = s, !s.isEmpty, s.lowercased() != "auto", !list.contains(s) else { return }
+        list.append(s)
+    }
+    add(activeProxy)
+    add(systemProxyString())
+    if let p = cfg.proxy, !p.isEmpty, p.lowercased() != "auto" {
+        for part in p.split(separator: ",") { add(part.trimmingCharacters(in: .whitespaces)) }
+    }
+    for p in ["127.0.0.1:1082", "127.0.0.1:10808", "127.0.0.1:1087", "127.0.0.1:7890", "127.0.0.1:7897"] { add(p) }
+    return list
 }
 
 func httpGET(_ session: URLSession, _ url: String, headers: [String: String], timeout: TimeInterval = 12) -> (Data?, Error?) {
@@ -163,7 +189,7 @@ func fetchDeepSeek(key: String) -> ProviderBalance {
 }
 
 // ---------------- ChatGPT Plus ----------------
-func fetchChatGPT(tokenPath: String?) -> ProviderBalance {
+func fetchChatGPT(tokenPath: String?, cfg: AppConfig) -> ProviderBalance {
     let key = "chatgpt"
     let authPath = (tokenPath?.isEmpty == false) ? (tokenPath! as NSString).expandingTildeInPath
                   : NSHomeDirectory() + "/.codex/auth.json"
@@ -188,14 +214,23 @@ func fetchChatGPT(tokenPath: String?) -> ProviderBalance {
         }
         struct RC: Decodable { let available_count: Int? }
     }
-    let (respData, _) = httpGET(proxySession, "https://chatgpt.com/backend-api/wham/usage",
-                            headers: ["Authorization": "Bearer \(tok)",
-                                      "Accept": "application/json",
-                                      "User-Agent": "TokenMeter/1.0"])
+    let url = "https://chatgpt.com/backend-api/wham/usage"
+    let headers = ["Authorization": "Bearer \(tok)",
+                   "Accept": "application/json",
+                   "User-Agent": "TokenMeter/1.0"]
+    // 依次探测候选代理，首个能拿到 HTTP 响应的即生效（自动适配换代理后的端口）
+    var respData: Data? = nil
+    var tried: [String] = []
+    for proxy in candidateProxies(cfg) {
+        guard let session = sessionWithProxy(proxy) else { continue }
+        tried.append(proxy)
+        let (d, _) = httpGET(session, url, headers: headers, timeout: 5)
+        if let d = d { activeProxy = proxy; respData = d; break }
+    }
     guard let respData = respData else {
         return ProviderBalance(key: key, name: "ChatGPT", symbol: "GP", menuTitle: "⚠︎",
                                display: "连接失败", currency: nil, amount: nil, error: true,
-                               detail: "无法访问 chatgpt.com —— 代理可能未启动，请打开代理后再试")
+                               detail: "无可用代理，试过：\(tried.joined(separator: ", "))")
     }
     guard let w = try? JSONDecoder().decode(Wham.self, from: respData), let rl = w.rate_limit else {
         let errMsg = ((try? JSONSerialization.jsonObject(with: respData) as? [String: Any])?["error"] as? String)
@@ -220,18 +255,23 @@ func fetchChatGPT(tokenPath: String?) -> ProviderBalance {
 }
 
 // ---------------- OpenAI ----------------
-func fetchOpenAI(key: String) -> ProviderBalance {
+func fetchOpenAI(key: String, cfg: AppConfig) -> ProviderBalance {
     if key.isEmpty {
         return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", menuTitle: "⚠︎",
                                display: "需配置 API Key", currency: nil, amount: nil, error: true,
                                detail: "在 config.json 的 openai.api_key 填入你的密钥")
     }
-    let (data, _) = httpGET(proxySession, "https://api.openai.com/dashboard/billing/credit_grants",
-                            headers: ["Authorization": "Bearer \(key)", "Accept": "application/json"])
-    guard let data = data else {
+    var respD: Data? = nil
+    for proxy in candidateProxies(cfg) {
+        guard let session = sessionWithProxy(proxy) else { continue }
+        let (d, _) = httpGET(session, "https://api.openai.com/dashboard/billing/credit_grants",
+                             headers: ["Authorization": "Bearer \(key)", "Accept": "application/json"], timeout: 5)
+        if let d = d { activeProxy = proxy; respD = d; break }
+    }
+    guard let data = respD else {
         return ProviderBalance(key: "openai", name: "OpenAI", symbol: "OA", menuTitle: "⚠︎",
                                display: "连接失败", currency: nil, amount: nil, error: true,
-                               detail: "无法访问 OpenAI API")
+                               detail: "无可用代理")
     }
     struct Resp: Decodable { let total_available: Double? }
     if let r = try? JSONDecoder().decode(Resp.self, from: data), let avail = r.total_available {
@@ -264,7 +304,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var timer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        configureSession()
         let cfg = AppConfig.load()
 
         for key in AppConfig.order {
@@ -310,8 +349,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let bal: ProviderBalance
                 switch name {
                 case "deepseek":  bal = fetchDeepSeek(key: pc.api_key)
-                case "chatgpt":   bal = fetchChatGPT(tokenPath: pc.token_path)
-                case "openai":    bal = fetchOpenAI(key: pc.api_key)
+                case "chatgpt":   bal = fetchChatGPT(tokenPath: pc.token_path, cfg: cfg)
+                case "openai":    bal = fetchOpenAI(key: pc.api_key, cfg: cfg)
                 case "anthropic": bal = fetchAnthropic(key: pc.api_key)
                 default:          continue
                 }
